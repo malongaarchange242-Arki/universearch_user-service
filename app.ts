@@ -9,9 +9,7 @@ import supabasePlugin from './internal/shared/database/supabase';
 import { getMailer } from './internal/shared/mail/mailer';
 import { registerUserServiceRoutes } from './internal/api/routes';
 import { getSocketManager } from './internal/shared/realtime/socket-manager';
-import './internal/identity/types/fastify.d.ts';
-import './internal/messaging/types/index.ts';
-import './internal/mail/types/fastify.d.ts';
+import './internal/messaging/types';
 
 const getCorsOrigin = () => {
   const configured = process.env.CORS_ORIGIN || '';
