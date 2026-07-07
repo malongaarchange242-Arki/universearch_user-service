@@ -46,7 +46,6 @@ const supabase_1 = __importDefault(require("./internal/shared/database/supabase"
 const mailer_1 = require("./internal/shared/mail/mailer");
 const routes_1 = require("./internal/api/routes");
 const socket_manager_1 = require("./internal/shared/realtime/socket-manager");
-require("./internal/messaging/types");
 const getCorsOrigin = () => {
     const configured = process.env.CORS_ORIGIN || '';
     if (process.env.NODE_ENV === 'production') {
