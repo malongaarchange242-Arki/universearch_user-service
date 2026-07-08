@@ -1,0 +1,133 @@
+Voici la liste des routes définies dans le service utilisateur "user-service", basée sur les fichiers de route sous index.ts et les modules associés.
+ces routes permettents de faire les tests
+
+## 1) Santé / monitoring
+- GET /health
+- GET /health/live
+- GET /health/ready
+- GET /metrics
+- POST /health
+- HEAD /health
+- GET /domaines-with-filieres
+
+## 2) Authentification
+- POST /auth/register
+- POST /auth/login
+- POST /auth/refresh
+- POST /auth/check-email
+- POST /auth/logout
+- PUT /auth/update-security
+- POST /auth/forgot-password
+- POST /auth/reset-password
+
+## 3) Utilisateurs
+- GET /users/count
+- GET /users/:id
+- GET /users
+- PUT /users/:id
+- DELETE /users/:id
+
+## 4) Administration
+- PATCH /admin/universites/:id/status
+- PATCH /admin/universites/:id/approve
+- PATCH /admin/universites/:id/reject
+- GET /admin/universites/pending
+- PATCH /admin/centres/:id/status
+- PATCH /admin/centres/:id/approve
+- PATCH /admin/centres/:id/reject
+- GET /admin/centres/pending
+- GET /admin/dashboard/stats
+
+## 5) Universités
+- POST /universites
+- GET /universites
+- GET /universites/:id
+- GET /universites/me
+- PUT /universites/me
+- POST /universites/me/filieres
+- POST /universites/me/logo
+
+## 6) Centres de formation
+- POST /centres
+- GET /centres
+- GET /centres/filieres
+- GET /centres/:id
+- GET /centres/me
+- PUT /centres/me
+- POST /centres/me/logo
+- POST /centres/me/filieres
+
+## 7) Filières
+- GET /filieres
+- GET /filieres/domaines-with-filieres
+
+## 8) Followers / abonnements
+- GET /universites/:id/followers/count
+- POST /universites/:id/follow
+- DELETE /universites/:id/follow
+- GET /universites/me/followed
+- GET /centres/:id/followers/count
+- POST /centres/:id/follow
+- DELETE /centres/:id/follow
+- GET /centres/me/followed
+
+## 9) Frais de scolarité
+- GET /universites/me/frais-scolarite
+- POST /universites/me/frais-scolarite
+- GET /universites/me/frais-scolarite/stats
+- GET /universites/me/frais-scolarite/:id
+- PUT /universites/me/frais-scolarite/:id
+- DELETE /universites/me/frais-scolarite/:id
+- GET /universites/:id/frais-scolarite
+
+## 10) BDE
+- POST /universites/bde
+- GET /universites/me/bde
+- GET /universites/:universite_id/bde
+- GET /bde/:id
+- PUT /bde/:id
+- DELETE /bde/:id
+
+## 11) Représentants
+- POST /centres/representants
+- GET /centres/:centre_id/representants
+- GET /representants/:id
+- PUT /representants/:id
+- DELETE /representants/:id
+
+## 12) Messaging
+- GET /messaging/health
+- GET /conversations
+- POST /conversations
+- GET /conversations/:id
+- GET /conversations/:id/messages
+- POST /messages
+- PUT /messages/:id
+- DELETE /messages/:id
+- POST /conversations/:id/read
+
+## 13) Mails / recommandations
+- POST /api/mail/recommendations/send
+- GET /api/mail/logs
+- GET /api/mail/logs/stats
+
+## 14) Établissements
+- GET /api/etablissements
+
+## 15) Notifications
+- GET /
+- GET /api/health
+- HEAD /api/health
+- POST /api/health
+- GET /api/notifications/health
+- HEAD /api/notifications/health
+- POST /api/notifications
+- POST /api/notifications/broadcast
+- POST /api/notifications/register-device
+- GET /api/notifications
+- GET /api/notifications/unread-count/:user_id
+- PUT /api/notifications/:id/mark-read
+- DELETE /api/notifications/:id
+- DELETE /api/notifications
+- POST /api/notifications/:id/events
+- GET /api/notifications/:id/analytics
