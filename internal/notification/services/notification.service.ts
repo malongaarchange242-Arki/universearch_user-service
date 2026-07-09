@@ -1,3 +1,4 @@
+import admin from 'firebase-admin';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { DeviceTokenPayload, NotificationPayload } from '../models';
 
@@ -37,6 +38,47 @@ const defaultTitle = (type?: string) => {
   }
 };
 
+const parseServiceAccountJson = (value: string) => {
+  const raw = value.trim().replace(/^['"]|['"]$/g, '');
+  try {
+    return JSON.parse(raw.replace(/\\n/g, '\n')) as admin.ServiceAccount;
+  } catch {
+    return null;
+  }
+};
+
+const getFirebaseMessaging = (): admin.messaging.Messaging | null => {
+  if (admin.apps.length > 0) {
+    return admin.messaging();
+  }
+
+  const serviceAccountJson = process.env.FCM_SERVICE_ACCOUNT_JSON
+    ? parseServiceAccountJson(process.env.FCM_SERVICE_ACCOUNT_JSON)
+    : null;
+  const hasGoogleCreds = Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim());
+
+  if (!serviceAccountJson && !hasGoogleCreds) {
+    return null;
+  }
+
+  const credential = serviceAccountJson
+    ? admin.credential.cert(serviceAccountJson)
+    : admin.credential.applicationDefault();
+
+  admin.initializeApp({
+    credential,
+    projectId: process.env.FCM_PROJECT_ID,
+  });
+
+  return admin.messaging();
+};
+
+const stringifyPushData = (data: Record<string, unknown>) => {
+  return Object.fromEntries(
+    Object.entries(data).map(([key, value]) => [key, typeof value === 'string' ? value : JSON.stringify(value)])
+  );
+};
+
 export class NotificationService {
   constructor(private readonly supabase: SupabaseClient) {}
 
@@ -48,6 +90,18 @@ export class NotificationService {
 
     const { data, error } = await this.supabase.from('notifications').insert([payload]).select().single();
     if (error) throw Object.assign(new Error(error.message), { statusCode: 422 });
+
+    if (payload.user_id && payload.delivery_types.includes('push')) {
+      try {
+        await this.sendPushNotification(data, String(payload.user_id));
+      } catch (error) {
+        console.warn('Unable to send FCM push for notification', {
+          user_id: payload.user_id,
+          notification_id: data?.id,
+          error,
+        });
+      }
+    }
 
     await this.incrementUnread(String(payload.user_id));
     return data;
@@ -257,6 +311,72 @@ export class NotificationService {
       .maybeSingle();
     if (error) throw error;
     return data;
+  }
+
+  private async sendPushNotification(notification: any, userId: string) {
+    const messaging = getFirebaseMessaging();
+    if (!messaging) {
+      return;
+    }
+
+    const { data, error } = await this.supabase
+      .from('device_tokens')
+      .select('token')
+      .eq('user_id', userId)
+      .eq('provider', 'fcm')
+      .is('disabled_at', null);
+    if (error) throw error;
+
+    const tokens = Array.from(
+      new Set((data ?? [])
+        .map((row: any) => String(row.token || ''))
+        .filter(Boolean))
+    );
+    if (tokens.length === 0) {
+      return;
+    }
+
+    const notificationData = normalizeMap(notification.data);
+    const messageData = {
+      ...stringifyPushData(notificationData),
+      notification_id: String(notification.id ?? ''),
+      type: notification.type ?? '',
+      campaign_type: notification.campaign_type ?? '',
+    };
+
+    const multicastMessage: admin.messaging.MulticastMessage = {
+      tokens,
+      notification: {
+        title: notification.title || defaultTitle(notification.type),
+        body: notification.message,
+        imageUrl: process.env.FCM_NOTIFICATION_IMAGE_URL || undefined,
+      },
+      data: messageData,
+      android: {
+        priority: 'high',
+        notification: {
+          imageUrl: process.env.FCM_NOTIFICATION_IMAGE_URL || undefined,
+        },
+      },
+      apns: {
+        payload: {
+          aps: {
+            sound: notification.silent ? undefined : 'default',
+            contentAvailable: notification.silent || undefined,
+          },
+        },
+      },
+    };
+
+    const response = await messaging.sendMulticast(multicastMessage);
+    if (response.failureCount > 0) {
+      const failures = response.responses
+        .map((resp, index) => (resp.success ? null : `token[${index}]: ${resp.error?.code || resp.error?.message || 'unknown'}`))
+        .filter(Boolean);
+      if (failures.length > 0) {
+        throw new Error(`FCM multicast failures: ${failures.join('; ')}`);
+      }
+    }
   }
 
   private async findDeviceTokenId(userId: string, token: string) {
