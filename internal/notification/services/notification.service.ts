@@ -452,10 +452,23 @@ export class NotificationService {
     };
 
       // Send notifications per-token to avoid using the deprecated /batch endpoint.
-      console.log('Sending to Firebase (per-token)...');
+    console.log('Sending to Firebase (per-token, batched)...');
 
-      const sendResults = await Promise.all(
-        tokens.map(async (token) => {
+    const supabase = this.supabase;
+    const BATCH_SIZE = Number(process.env.FCM_BATCH_SIZE) || 50;
+    const removableErrors = [
+      'messaging/registration-token-not-registered',
+      'messaging/invalid-registration-token',
+      'messaging/mismatched-credential',
+    ];
+
+    const sendResults: Array<{ success: boolean; token: string; error?: any; result?: any }> = [];
+
+    for (let i = 0; i < tokens.length; i += BATCH_SIZE) {
+      const batch = tokens.slice(i, i + BATCH_SIZE);
+
+      const batchResults = await Promise.all(
+        batch.map(async (token) => {
           try {
             const msg: admin.messaging.Message = {
               token,
@@ -483,22 +496,40 @@ export class NotificationService {
 
             const res = await messaging.send(msg);
             return { success: true, token, result: res };
-          } catch (err) {
+          } catch (err: any) {
+            // If the token is invalid or not registered, remove it from the DB
+            try {
+              const code = err?.code || (err?.errorInfo && err.errorInfo.code) || '';
+              const shouldRemove = removableErrors.includes(code) || String(err).includes('Requested entity was not found');
+              if (shouldRemove) {
+                try {
+                  await supabase.from('device_tokens').delete().eq('token', token);
+                  console.log('Removed invalid device token from DB:', token);
+                } catch (delErr) {
+                  console.warn('Failed to remove invalid token', token, delErr);
+                }
+              }
+            } catch (innerErr) {
+              console.warn('Error while handling send error for token', token, innerErr);
+            }
+
             return { success: false, token, error: err };
           }
         })
       );
 
-      const successCount = sendResults.filter((r) => r.success).length;
-      const failureEntries = sendResults.filter((r) => !r.success);
+      sendResults.push(...batchResults);
+      // small pause could be added here if needed to rate-limit
+    }
 
-      console.log('Success:', successCount);
-      console.log('Failure:', failureEntries.length);
-      if (failureEntries.length > 0) {
-        console.log('Failures detail:', failureEntries.map((f) => ({ token: f.token, error: String((f as any).error) })));
-        const failures = failureEntries.map((f, i) => `token[${i}]: ${String((f as any).error)}`);
-        throw new Error(`FCM send failures: ${failures.join('; ')}`);
-      }
+    const successCount = sendResults.filter((r) => r.success).length;
+    const failureEntries = sendResults.filter((r) => !r.success);
+
+    console.log('Success:', successCount);
+    console.log('Failure:', failureEntries.length);
+    if (failureEntries.length > 0) {
+      console.log('Failures detail:', failureEntries.map((f) => ({ token: f.token, error: String((f as any).error) })));
+    }
   }
 
   private async findDeviceTokenId(userId: string, token: string) {
