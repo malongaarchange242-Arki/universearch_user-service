@@ -1,4 +1,6 @@
 import admin from 'firebase-admin';
+import { existsSync, readFileSync } from 'fs';
+import path from 'path';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { DeviceTokenPayload, NotificationPayload } from '../models';
 
@@ -69,30 +71,66 @@ const parseServiceAccountJson = (value: string) => {
   }
 };
 
+const loadServiceAccountJson = (): admin.ServiceAccount | null => {
+  const fromEnv = process.env.FCM_SERVICE_ACCOUNT_JSON ? parseServiceAccountJson(process.env.FCM_SERVICE_ACCOUNT_JSON) : null;
+  if (fromEnv) return fromEnv;
+
+  const configuredPath = process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim();
+  const candidatePaths = [
+    configuredPath,
+    path.resolve(process.cwd(), 'internal/notification/universearch-af5a4-firebase-adminsdk-fbsvc-bb57157828.json'),
+    path.resolve(process.cwd(), 'universearch-af5a4-firebase-adminsdk-fbsvc-bb57157828.json'),
+    path.resolve(process.cwd(), 'internal/notification/universearch-af5a4-firebase-adminsdk-fbsvc-bb57157828.json'.replace(/\\/g, '/')),
+  ].filter((value): value is string => Boolean(value));
+
+  for (const candidatePath of candidatePaths) {
+    if (!existsSync(candidatePath)) continue;
+
+    try {
+      const fileContents = readFileSync(candidatePath, 'utf8');
+      const parsed = JSON.parse(fileContents) as admin.ServiceAccount;
+      if ((parsed as any)?.project_id || (parsed as any)?.projectId) {
+        return parsed;
+      }
+    } catch (error) {
+      console.warn('Failed to read FCM service account file', { candidatePath, error });
+    }
+  }
+
+  return null;
+};
+
 const getFirebaseMessaging = (): admin.messaging.Messaging | null => {
   if (admin.apps.length > 0) {
     return admin.messaging();
   }
 
-  const serviceAccountJson = process.env.FCM_SERVICE_ACCOUNT_JSON
-    ? parseServiceAccountJson(process.env.FCM_SERVICE_ACCOUNT_JSON)
-    : null;
-  const hasGoogleCreds = Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim());
+  console.log('Initializing Firebase...');
+
+  const serviceAccountJson = loadServiceAccountJson();
+  const hasGoogleCreds = Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim()) || Boolean(serviceAccountJson);
 
   if (!serviceAccountJson && !hasGoogleCreds) {
+    console.warn('FCM push disabled: no Firebase credentials configured');
     return null;
   }
 
-  const credential = serviceAccountJson
-    ? admin.credential.cert(serviceAccountJson)
-    : admin.credential.applicationDefault();
+  try {
+    const credential = serviceAccountJson
+      ? admin.credential.cert(serviceAccountJson)
+      : admin.credential.applicationDefault();
 
-  admin.initializeApp({
-    credential,
-    projectId: process.env.FCM_PROJECT_ID,
-  });
+    admin.initializeApp({
+      credential,
+      projectId: process.env.FCM_PROJECT_ID,
+    });
 
-  return admin.messaging();
+    console.log('Firebase initialized');
+    return admin.messaging();
+  } catch (error) {
+    console.error('Failed to initialize Firebase Messaging', error);
+    return null;
+  }
 };
 
 const stringifyPushData = (data: Record<string, unknown>) => {
@@ -350,8 +388,12 @@ export class NotificationService {
   }
 
   private async sendPushNotification(notification: any, userId: string) {
+    console.log('========== SEND PUSH ==========');
+    console.log('User:', userId);
+
     const messaging = getFirebaseMessaging();
     if (!messaging) {
+      console.log('No Firebase messaging instance available');
       return;
     }
 
@@ -363,12 +405,16 @@ export class NotificationService {
       .is('disabled_at', null);
     if (error) throw error;
 
+    console.log('DB returned:', data);
+
     const tokens = Array.from(
       new Set((data ?? [])
         .map((row: any) => String(row.token || ''))
         .filter(Boolean))
     );
+    console.log('Tokens:', tokens.length);
     if (tokens.length === 0) {
+      console.log('No device tokens found for user');
       return;
     }
 
@@ -404,7 +450,13 @@ export class NotificationService {
       },
     };
 
+    console.log('Sending to Firebase...');
     const response = await messaging.sendMulticast(multicastMessage);
+    console.log('Success:', response.successCount);
+    console.log('Failure:', response.failureCount);
+    console.log('Firebase response:', response.responses);
+    console.log(JSON.stringify(response, null, 2));
+
     if (response.failureCount > 0) {
       const failures = response.responses
         .map((resp, index) => (resp.success ? null : `token[${index}]: ${resp.error?.code || resp.error?.message || 'unknown'}`))

@@ -5,6 +5,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.NotificationService = void 0;
 const firebase_admin_1 = __importDefault(require("firebase-admin"));
+const fs_1 = require("fs");
+const path_1 = __importDefault(require("path"));
 const normalizeMap = (value) => {
     return value && typeof value === 'object' && !Array.isArray(value)
         ? value
@@ -62,25 +64,57 @@ const parseServiceAccountJson = (value) => {
         return null;
     }
 };
+const loadServiceAccountJson = () => {
+    const fromEnv = process.env.FCM_SERVICE_ACCOUNT_JSON ? parseServiceAccountJson(process.env.FCM_SERVICE_ACCOUNT_JSON) : null;
+    if (fromEnv)
+        return fromEnv;
+    const configuredPath = process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim();
+    const candidatePaths = [
+        configuredPath,
+        path_1.default.resolve(process.cwd(), 'internal/notification/universearch-af5a4-firebase-adminsdk-fbsvc-bb57157828.json'),
+        path_1.default.resolve(process.cwd(), 'universearch-af5a4-firebase-adminsdk-fbsvc-bb57157828.json'),
+        path_1.default.resolve(process.cwd(), 'internal/notification/universearch-af5a4-firebase-adminsdk-fbsvc-bb57157828.json'.replace(/\\/g, '/')),
+    ].filter((value) => Boolean(value));
+    for (const candidatePath of candidatePaths) {
+        if (!(0, fs_1.existsSync)(candidatePath))
+            continue;
+        try {
+            const fileContents = (0, fs_1.readFileSync)(candidatePath, 'utf8');
+            const parsed = JSON.parse(fileContents);
+            if (parsed?.project_id || parsed?.projectId) {
+                return parsed;
+            }
+        }
+        catch (error) {
+            console.warn('Failed to read FCM service account file', { candidatePath, error });
+        }
+    }
+    return null;
+};
 const getFirebaseMessaging = () => {
     if (firebase_admin_1.default.apps.length > 0) {
         return firebase_admin_1.default.messaging();
     }
-    const serviceAccountJson = process.env.FCM_SERVICE_ACCOUNT_JSON
-        ? parseServiceAccountJson(process.env.FCM_SERVICE_ACCOUNT_JSON)
-        : null;
-    const hasGoogleCreds = Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim());
+    const serviceAccountJson = loadServiceAccountJson();
+    const hasGoogleCreds = Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim()) || Boolean(serviceAccountJson);
     if (!serviceAccountJson && !hasGoogleCreds) {
+        console.warn('FCM push disabled: no Firebase credentials configured');
         return null;
     }
-    const credential = serviceAccountJson
-        ? firebase_admin_1.default.credential.cert(serviceAccountJson)
-        : firebase_admin_1.default.credential.applicationDefault();
-    firebase_admin_1.default.initializeApp({
-        credential,
-        projectId: process.env.FCM_PROJECT_ID,
-    });
-    return firebase_admin_1.default.messaging();
+    try {
+        const credential = serviceAccountJson
+            ? firebase_admin_1.default.credential.cert(serviceAccountJson)
+            : firebase_admin_1.default.credential.applicationDefault();
+        firebase_admin_1.default.initializeApp({
+            credential,
+            projectId: process.env.FCM_PROJECT_ID,
+        });
+        return firebase_admin_1.default.messaging();
+    }
+    catch (error) {
+        console.error('Failed to initialize Firebase Messaging', error);
+        return null;
+    }
 };
 const stringifyPushData = (data) => {
     return Object.fromEntries(Object.entries(data).map(([key, value]) => [key, typeof value === 'string' ? value : JSON.stringify(value)]));
