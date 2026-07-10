@@ -63,10 +63,17 @@ const defaultTitle = (type?: string) => {
 };
 
 const parseServiceAccountJson = (value: string) => {
+  if (!value || typeof value !== 'string') return null;
   const raw = value.trim().replace(/^['"]|['"]$/g, '');
   try {
-    return JSON.parse(raw.replace(/\\n/g, '\n')) as admin.ServiceAccount;
-  } catch {
+    const parsed = JSON.parse(raw) as admin.ServiceAccount & { private_key?: string };
+    if (parsed && typeof (parsed as any).private_key === 'string') {
+      // Replace escaped newlines in the private key AFTER parsing
+      (parsed as any).private_key = (parsed as any).private_key.replace(/\\n/g, '\n');
+    }
+    return parsed;
+  } catch (error) {
+    console.error('Failed to parse FCM_SERVICE_ACCOUNT_JSON', error);
     return null;
   }
 };
@@ -105,30 +112,34 @@ const getFirebaseMessaging = (): admin.messaging.Messaging | null => {
     return admin.messaging();
   }
 
-  console.log('Initializing Firebase...');
+  console.log('FCM_SERVICE_ACCOUNT_JSON exists:', !!process.env.FCM_SERVICE_ACCOUNT_JSON);
+  console.log('GOOGLE_APPLICATION_CREDENTIALS:', process.env.GOOGLE_APPLICATION_CREDENTIALS);
 
-  const serviceAccountJson = loadServiceAccountJson();
-  const hasGoogleCreds = Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim()) || Boolean(serviceAccountJson);
-
-  if (!serviceAccountJson && !hasGoogleCreds) {
-    console.warn('FCM push disabled: no Firebase credentials configured');
-    return null;
+  const serviceAccount = loadServiceAccountJson();
+  console.log('serviceAccount loaded:', !!serviceAccount);
+  if (serviceAccount) {
+    console.log('project_id =', (serviceAccount as any).project_id);
   }
 
   try {
-    const credential = serviceAccountJson
-      ? admin.credential.cert(serviceAccountJson)
-      : admin.credential.applicationDefault();
-
-    admin.initializeApp({
-      credential,
-      projectId: process.env.FCM_PROJECT_ID,
-    });
+    if (serviceAccount) {
+      console.log('Initializing Firebase with ServiceAccount');
+      admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount),
+        projectId: (serviceAccount as any).project_id || process.env.FCM_PROJECT_ID,
+      });
+    } else {
+      console.log('Initializing Firebase with ApplicationDefault');
+      admin.initializeApp({
+        credential: admin.credential.applicationDefault(),
+        projectId: process.env.FCM_PROJECT_ID,
+      });
+    }
 
     console.log('Firebase initialized');
     return admin.messaging();
   } catch (error) {
-    console.error('Failed to initialize Firebase Messaging', error);
+    console.error('Firebase init failed', error);
     return null;
   }
 };
