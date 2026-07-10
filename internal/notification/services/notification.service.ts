@@ -451,45 +451,54 @@ export class NotificationService {
       campaign_type: notification.campaign_type ?? '',
     };
 
-    const multicastMessage: admin.messaging.MulticastMessage = {
-      tokens,
-      notification: {
-        title: notification.title || defaultTitle(notification.type),
-        body: notification.message,
-        imageUrl: process.env.FCM_NOTIFICATION_IMAGE_URL || undefined,
-      },
-      data: messageData,
-      android: {
-        priority: 'high',
-        notification: {
-          imageUrl: process.env.FCM_NOTIFICATION_IMAGE_URL || undefined,
-        },
-      },
-      apns: {
-        payload: {
-          aps: {
-            sound: notification.silent ? undefined : 'default',
-            contentAvailable: notification.silent || undefined,
-          },
-        },
-      },
-    };
+      // Send notifications per-token to avoid using the deprecated /batch endpoint.
+      console.log('Sending to Firebase (per-token)...');
 
-    console.log('Sending to Firebase...');
-    const response = await messaging.sendMulticast(multicastMessage);
-    console.log('Success:', response.successCount);
-    console.log('Failure:', response.failureCount);
-    console.log('Firebase response:', response.responses);
-    console.log(JSON.stringify(response, null, 2));
+      const sendResults = await Promise.all(
+        tokens.map(async (token) => {
+          try {
+            const msg: admin.messaging.Message = {
+              token,
+              notification: {
+                title: notification.title || defaultTitle(notification.type),
+                body: notification.message,
+                imageUrl: process.env.FCM_NOTIFICATION_IMAGE_URL || undefined,
+              },
+              data: messageData as { [k: string]: string },
+              android: {
+                priority: 'high',
+                notification: {
+                  imageUrl: process.env.FCM_NOTIFICATION_IMAGE_URL || undefined,
+                },
+              },
+              apns: {
+                payload: {
+                  aps: {
+                    sound: notification.silent ? undefined : 'default',
+                    contentAvailable: notification.silent || undefined,
+                  },
+                },
+              },
+            };
 
-    if (response.failureCount > 0) {
-      const failures = response.responses
-        .map((resp, index) => (resp.success ? null : `token[${index}]: ${resp.error?.code || resp.error?.message || 'unknown'}`))
-        .filter(Boolean);
-      if (failures.length > 0) {
-        throw new Error(`FCM multicast failures: ${failures.join('; ')}`);
+            const res = await messaging.send(msg);
+            return { success: true, token, result: res };
+          } catch (err) {
+            return { success: false, token, error: err };
+          }
+        })
+      );
+
+      const successCount = sendResults.filter((r) => r.success).length;
+      const failureEntries = sendResults.filter((r) => !r.success);
+
+      console.log('Success:', successCount);
+      console.log('Failure:', failureEntries.length);
+      if (failureEntries.length > 0) {
+        console.log('Failures detail:', failureEntries.map((f) => ({ token: f.token, error: String((f as any).error) })));
+        const failures = failureEntries.map((f, i) => `token[${i}]: ${String((f as any).error)}`);
+        throw new Error(`FCM send failures: ${failures.join('; ')}`);
       }
-    }
   }
 
   private async findDeviceTokenId(userId: string, token: string) {
