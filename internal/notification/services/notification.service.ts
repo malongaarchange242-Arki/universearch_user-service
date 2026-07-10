@@ -148,7 +148,19 @@ export class NotificationService {
       throw Object.assign(new Error('user_id, type and message are required'), { statusCode: 422 });
     }
 
-    const { data, error } = await this.supabase.from('notifications').insert([payload]).select().single();
+    const insertPayload = {
+      user_id: payload.user_id,
+      title: payload.title,
+      message: payload.message,
+      type: payload.type,
+      priority: payload.priority,
+      campaign_type: payload.campaign_type,
+      delivery_types: payload.delivery_types,
+      silent: payload.silent,
+      data: payload.data,
+    };
+
+    const { data, error } = await this.supabase.from('notifications').insert([insertPayload]).select().single();
     if (error) throw Object.assign(new Error(error.message), { statusCode: 422 });
 
     if (payload.user_id && payload.delivery_types.includes('push')) {
@@ -173,11 +185,13 @@ export class NotificationService {
       throw Object.assign(new Error('No recipients found for notification'), { statusCode: 422 });
     }
 
+    const { target_all, targeting, user_ids, recipient_user_ids, recipient_user_id, ...notificationAttrs } = attrs as any;
+
     const notifications = [];
     const errors = [];
     for (const userId of recipients) {
       try {
-        notifications.push(await this.create({ ...attrs, user_id: userId, user_ids: undefined, targeting: undefined }));
+        notifications.push(await this.create({ ...notificationAttrs, user_id: userId }));
       } catch (error) {
         errors.push({ user_id: userId, error: error instanceof Error ? error.message : String(error) });
       }
