@@ -8,6 +8,28 @@ const normalizeMap = (value: unknown): Record<string, unknown> => {
     : {};
 };
 
+const normalizeDeliveryTypes = (value: unknown): string[] => {
+  if (Array.isArray(value)) {
+    return Array.from(
+      new Set(
+        value
+          .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+          .map((item) => item.trim().toLowerCase())
+      )
+    );
+  }
+
+  if (typeof value === 'string') {
+    const values = value
+      .split(',')
+      .map((item) => item.trim().toLowerCase())
+      .filter(Boolean);
+    return values.length > 0 ? values : ['in_app', 'push'];
+  }
+
+  return ['in_app', 'push'];
+};
+
 const normalizeNotification = (attrs: NotificationPayload) => {
   const type = attrs.type;
   return {
@@ -16,7 +38,7 @@ const normalizeNotification = (attrs: NotificationPayload) => {
     priority: attrs.priority ?? 'high',
     campaign_type: attrs.campaign_type ?? 'transactional',
     silent: attrs.silent ?? false,
-    delivery_types: Array.from(new Set(attrs.delivery_types ?? ['in_app', 'push'])),
+    delivery_types: normalizeDeliveryTypes(attrs.delivery_types),
     data: normalizeMap(attrs.data),
   };
 };
@@ -281,10 +303,24 @@ export class NotificationService {
   }
 
   private async resolveRecipients(attrs: NotificationPayload) {
-    if (attrs.user_ids?.length) return Array.from(new Set(attrs.user_ids.map(String)));
+    const explicitUserIds = attrs.user_ids ?? attrs.recipient_user_ids;
+    if (explicitUserIds?.length) return Array.from(new Set(explicitUserIds.map(String)));
     if (attrs.user_id) return [String(attrs.user_id)];
+    if (attrs.recipient_user_id) return [String(attrs.recipient_user_id)];
 
     const targeting = normalizeMap(attrs.targeting);
+    const targetAll =
+      Boolean(attrs.target_all) ||
+      Boolean(targeting.target_all) ||
+      Boolean(targeting.all) ||
+      String(targeting.scope ?? targeting.target_scope ?? '').trim().toLowerCase() === 'all';
+
+    if (targetAll) {
+      const { data, error } = await this.supabase.from('profiles').select('id');
+      if (error) throw error;
+      return Array.from(new Set((data ?? []).map((row: any) => String(row.id)).filter(Boolean)));
+    }
+
     let query = this.supabase.from('device_tokens').select('user_id').is('disabled_at', null);
     if (targeting.user_type) query = query.eq('user_type', String(targeting.user_type));
     if (Array.isArray(targeting.platforms) && targeting.platforms.length > 0) {

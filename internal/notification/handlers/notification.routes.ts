@@ -12,6 +12,33 @@ const sendError = (reply: any, error: unknown) => {
   return reply.status(statusCode).send(statusCode === 422 ? { errors: [message] } : { error: message });
 };
 
+const getHeaderValue = (headers: any, name: string) => {
+  const value = headers?.[name] ?? headers?.[name.toLowerCase()] ?? headers?.[name.toUpperCase()];
+  if (Array.isArray(value)) return value[0];
+  return typeof value === 'string' ? value : undefined;
+};
+
+const attachRequestContext = (request: any, payload: any) => {
+  const headerUserId = getHeaderValue(request.headers, 'x-user-id');
+  const candidates = [
+    (request as any)?.user?.id,
+    (request as any)?.currentUser?.id,
+    headerUserId,
+    payload?.user_id,
+    Array.isArray(payload?.user_ids) ? payload.user_ids[0] : undefined,
+    Array.isArray(payload?.recipient_user_ids) ? payload.recipient_user_ids[0] : undefined,
+  ];
+
+  const resolvedUserId = candidates.find((value) => typeof value === 'string' && value.trim().length > 0);
+  if (resolvedUserId) {
+    (request as any).user = { ...((request as any).user || {}), id: String(resolvedUserId) };
+    (request as any).currentUser = { ...((request as any).currentUser || {}), id: String(resolvedUserId) };
+    (request as any).requestUserId = String(resolvedUserId);
+  }
+
+  return resolvedUserId;
+};
+
 export const notificationRoutes = async (app: FastifyInstance) => {
   const service = new NotificationService(app.supabase);
 
@@ -24,7 +51,9 @@ export const notificationRoutes = async (app: FastifyInstance) => {
 
   app.post('/api/notifications', async (request, reply) => {
     try {
-      const notification = await service.create(unwrap(request.body, 'notification'));
+      const payload = unwrap(request.body, 'notification');
+      attachRequestContext(request, payload);
+      const notification = await service.create(payload);
       return reply.status(201).send({ notification });
     } catch (error) {
       return sendError(reply, error);
@@ -33,7 +62,9 @@ export const notificationRoutes = async (app: FastifyInstance) => {
 
   app.post('/api/notifications/broadcast', async (request, reply) => {
     try {
-      const result = await service.broadcast(unwrap(request.body, 'notification'));
+      const payload = unwrap(request.body, 'notification');
+      attachRequestContext(request, payload);
+      const result = await service.broadcast(payload);
       return reply.status(201).send({
         count: result.count,
         notification_ids: result.notifications.map((item: any) => item.id),

@@ -11,6 +11,30 @@ const sendError = (reply, error) => {
     const message = error instanceof Error ? error.message : 'Internal Server Error';
     return reply.status(statusCode).send(statusCode === 422 ? { errors: [message] } : { error: message });
 };
+const getHeaderValue = (headers, name) => {
+    const value = headers?.[name] ?? headers?.[name.toLowerCase()] ?? headers?.[name.toUpperCase()];
+    if (Array.isArray(value))
+        return value[0];
+    return typeof value === 'string' ? value : undefined;
+};
+const attachRequestContext = (request, payload) => {
+    const headerUserId = getHeaderValue(request.headers, 'x-user-id');
+    const candidates = [
+        request?.user?.id,
+        request?.currentUser?.id,
+        headerUserId,
+        payload?.user_id,
+        Array.isArray(payload?.user_ids) ? payload.user_ids[0] : undefined,
+        Array.isArray(payload?.recipient_user_ids) ? payload.recipient_user_ids[0] : undefined,
+    ];
+    const resolvedUserId = candidates.find((value) => typeof value === 'string' && value.trim().length > 0);
+    if (resolvedUserId) {
+        request.user = { ...(request.user || {}), id: String(resolvedUserId) };
+        request.currentUser = { ...(request.currentUser || {}), id: String(resolvedUserId) };
+        request.requestUserId = String(resolvedUserId);
+    }
+    return resolvedUserId;
+};
 const notificationRoutes = async (app) => {
     const service = new notification_service_1.NotificationService(app.supabase);
     app.get('/', async () => ({ service: 'notification-service', status: 'ok' }));
@@ -21,7 +45,9 @@ const notificationRoutes = async (app) => {
     app.head('/api/notifications/health', async (_request, reply) => reply.status(200).send());
     app.post('/api/notifications', async (request, reply) => {
         try {
-            const notification = await service.create(unwrap(request.body, 'notification'));
+            const payload = unwrap(request.body, 'notification');
+            attachRequestContext(request, payload);
+            const notification = await service.create(payload);
             return reply.status(201).send({ notification });
         }
         catch (error) {
@@ -30,7 +56,9 @@ const notificationRoutes = async (app) => {
     });
     app.post('/api/notifications/broadcast', async (request, reply) => {
         try {
-            const result = await service.broadcast(unwrap(request.body, 'notification'));
+            const payload = unwrap(request.body, 'notification');
+            attachRequestContext(request, payload);
+            const result = await service.broadcast(payload);
             return reply.status(201).send({
                 count: result.count,
                 notification_ids: result.notifications.map((item) => item.id),

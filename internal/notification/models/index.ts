@@ -13,7 +13,10 @@ export type NotificationPayload = {
   campaign_type?: 'transactional' | 'engagement' | 'sponsored' | 'system';
   sponsor_id?: string | null;
   user_ids?: string[];
+  recipient_user_ids?: string[];
+  recipient_user_id?: string;
   targeting?: Record<string, unknown>;
+  target_all?: boolean;
 };
 
 export type DeviceTokenPayload = {

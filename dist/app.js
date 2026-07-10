@@ -88,7 +88,7 @@ exports.app.addHook('onResponse', (request, reply) => {
     if (!start)
         return;
     const duration = Number(process.hrtime.bigint() - start) / 1_000_000;
-    const userId = request.user?.id || request.currentUser?.id || null;
+    const userId = request.user?.id || request.currentUser?.id || request.requestUserId || null;
     exports.app.log.info({
         service: 'user-service',
         module: (request.url || '').includes('/auth') ? 'identity' : (request.url || '').includes('/messages') ? 'messaging' : 'http',
