@@ -57,8 +57,12 @@ const notificationRoutes = async (app) => {
     app.post('/api/notifications/broadcast', async (request, reply) => {
         try {
             const payload = unwrap(request.body, 'notification');
+            console.log('===== BROADCAST PAYLOAD =====');
+            console.log(JSON.stringify(payload, null, 2));
             attachRequestContext(request, payload);
             const result = await service.broadcast(payload);
+            console.log('===== BROADCAST RESULT =====');
+            console.log(JSON.stringify(result, null, 2));
             return reply.status(201).send({
                 count: result.count,
                 notification_ids: result.notifications.map((item) => item.id),
@@ -67,6 +71,7 @@ const notificationRoutes = async (app) => {
             });
         }
         catch (error) {
+            console.error(error);
             return sendError(reply, error);
         }
     });

@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'fs';
 import path from 'path';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { DeviceTokenPayload, NotificationPayload } from '../models';
+import { createNotificationQueue } from '../queue/notification.queue';
 
 const normalizeMap = (value: unknown): Record<string, unknown> => {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -176,9 +177,26 @@ export class NotificationService {
 
     if (payload.user_id && payload.delivery_types.includes('push')) {
       try {
-        await this.sendPushNotification(data, String(payload.user_id));
+        const notificationQueue = createNotificationQueue();
+        const jobOptions: any = {
+          priority: payload.job_priority ?? (payload.priority === 'high' ? 1 : payload.campaign_type === 'sponsored' ? 10 : 5),
+        };
+
+        if (payload.jobId) {
+          jobOptions.jobId = String(payload.jobId);
+        } else if (payload.type && payload.data) {
+          const entityId = String(payload.data.post_id ?? payload.data.entity_id ?? '');
+          if (entityId && ['like', 'comment', 'inbox'].includes(payload.type)) {
+            jobOptions.jobId = `${payload.user_id}-${payload.type}-${entityId}`;
+          }
+        }
+
+        await notificationQueue.add('send-push', {
+          notification_id: data?.id,
+          user_id: String(payload.user_id),
+        }, jobOptions);
       } catch (error) {
-        console.warn('Unable to send FCM push for notification', {
+        console.warn('Unable to enqueue push notification job', {
           user_id: payload.user_id,
           notification_id: data?.id,
           error,

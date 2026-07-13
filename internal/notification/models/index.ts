@@ -7,6 +7,8 @@ export type NotificationPayload = {
   read?: boolean;
   delivery_types?: string[];
   priority?: 'high' | 'normal';
+  job_priority?: number;
+  jobId?: string;
   deep_link?: string | null;
   collapse_key?: string | null;
   silent?: boolean;

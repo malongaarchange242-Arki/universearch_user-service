@@ -1,4 +1,11 @@
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: universearch-user-redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
   user-service:
     build:
       context: .
@@ -10,6 +17,24 @@ services:
       NODE_ENV: production
       HOST: 0.0.0.0
       PORT: 3001
+      REDIS_URL: redis://redis:6379
     ports:
       - "3001:3001"
+    depends_on:
+      - redis
     restart: unless-stopped
+
+  notification-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: npm run worker
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      - redis
+    restart: unless-stopped
+    stop_grace_period: 30s

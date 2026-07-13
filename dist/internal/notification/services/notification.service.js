@@ -7,6 +7,7 @@ exports.NotificationService = void 0;
 const firebase_admin_1 = __importDefault(require("firebase-admin"));
 const fs_1 = require("fs");
 const path_1 = __importDefault(require("path"));
+const notification_queue_1 = require("../queue/notification.queue");
 const normalizeMap = (value) => {
     return value && typeof value === 'object' && !Array.isArray(value)
         ? value
@@ -56,11 +57,19 @@ const defaultTitle = (type) => {
     }
 };
 const parseServiceAccountJson = (value) => {
+    if (!value || typeof value !== 'string')
+        return null;
     const raw = value.trim().replace(/^['"]|['"]$/g, '');
     try {
-        return JSON.parse(raw.replace(/\\n/g, '\n'));
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed.private_key === 'string') {
+            // Replace escaped newlines in the private key AFTER parsing
+            parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
+        }
+        return parsed;
     }
-    catch {
+    catch (error) {
+        console.error('Failed to parse FCM_SERVICE_ACCOUNT_JSON', error);
         return null;
     }
 };
@@ -95,24 +104,33 @@ const getFirebaseMessaging = () => {
     if (firebase_admin_1.default.apps.length > 0) {
         return firebase_admin_1.default.messaging();
     }
-    const serviceAccountJson = loadServiceAccountJson();
-    const hasGoogleCreds = Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim()) || Boolean(serviceAccountJson);
-    if (!serviceAccountJson && !hasGoogleCreds) {
-        console.warn('FCM push disabled: no Firebase credentials configured');
-        return null;
+    console.log('FCM_SERVICE_ACCOUNT_JSON exists:', !!process.env.FCM_SERVICE_ACCOUNT_JSON);
+    console.log('GOOGLE_APPLICATION_CREDENTIALS:', process.env.GOOGLE_APPLICATION_CREDENTIALS);
+    const serviceAccount = loadServiceAccountJson();
+    console.log('serviceAccount loaded:', !!serviceAccount);
+    if (serviceAccount) {
+        console.log('project_id =', serviceAccount.project_id);
     }
     try {
-        const credential = serviceAccountJson
-            ? firebase_admin_1.default.credential.cert(serviceAccountJson)
-            : firebase_admin_1.default.credential.applicationDefault();
-        firebase_admin_1.default.initializeApp({
-            credential,
-            projectId: process.env.FCM_PROJECT_ID,
-        });
+        if (serviceAccount) {
+            console.log('Initializing Firebase with ServiceAccount');
+            firebase_admin_1.default.initializeApp({
+                credential: firebase_admin_1.default.credential.cert(serviceAccount),
+                projectId: serviceAccount.project_id || process.env.FCM_PROJECT_ID,
+            });
+        }
+        else {
+            console.log('Initializing Firebase with ApplicationDefault');
+            firebase_admin_1.default.initializeApp({
+                credential: firebase_admin_1.default.credential.applicationDefault(),
+                projectId: process.env.FCM_PROJECT_ID,
+            });
+        }
+        console.log('Firebase initialized');
         return firebase_admin_1.default.messaging();
     }
     catch (error) {
-        console.error('Failed to initialize Firebase Messaging', error);
+        console.error('Firebase init failed', error);
         return null;
     }
 };
@@ -129,15 +147,42 @@ class NotificationService {
         if (!payload.user_id || !payload.type || !payload.message) {
             throw Object.assign(new Error('user_id, type and message are required'), { statusCode: 422 });
         }
-        const { data, error } = await this.supabase.from('notifications').insert([payload]).select().single();
+        const insertPayload = {
+            user_id: payload.user_id,
+            title: payload.title,
+            message: payload.message,
+            type: payload.type,
+            priority: payload.priority,
+            campaign_type: payload.campaign_type,
+            delivery_types: payload.delivery_types,
+            silent: payload.silent,
+            data: payload.data,
+        };
+        const { data, error } = await this.supabase.from('notifications').insert([insertPayload]).select().single();
         if (error)
             throw Object.assign(new Error(error.message), { statusCode: 422 });
         if (payload.user_id && payload.delivery_types.includes('push')) {
             try {
-                await this.sendPushNotification(data, String(payload.user_id));
+                const notificationQueue = (0, notification_queue_1.createNotificationQueue)();
+                const jobOptions = {
+                    priority: payload.job_priority ?? (payload.priority === 'high' ? 1 : payload.campaign_type === 'sponsored' ? 10 : 5),
+                };
+                if (payload.jobId) {
+                    jobOptions.jobId = String(payload.jobId);
+                }
+                else if (payload.type && payload.data) {
+                    const entityId = String(payload.data.post_id ?? payload.data.entity_id ?? '');
+                    if (entityId && ['like', 'comment', 'inbox'].includes(payload.type)) {
+                        jobOptions.jobId = `${payload.user_id}-${payload.type}-${entityId}`;
+                    }
+                }
+                await notificationQueue.add('send-push', {
+                    notification_id: data?.id,
+                    user_id: String(payload.user_id),
+                }, jobOptions);
             }
             catch (error) {
-                console.warn('Unable to send FCM push for notification', {
+                console.warn('Unable to enqueue push notification job', {
                     user_id: payload.user_id,
                     notification_id: data?.id,
                     error,
@@ -152,11 +197,12 @@ class NotificationService {
         if (recipients.length === 0) {
             throw Object.assign(new Error('No recipients found for notification'), { statusCode: 422 });
         }
+        const { target_all, targeting, user_ids, recipient_user_ids, recipient_user_id, ...notificationAttrs } = attrs;
         const notifications = [];
         const errors = [];
         for (const userId of recipients) {
             try {
-                notifications.push(await this.create({ ...attrs, user_id: userId, user_ids: undefined, targeting: undefined }));
+                notifications.push(await this.create({ ...notificationAttrs, user_id: userId }));
             }
             catch (error) {
                 errors.push({ user_id: userId, error: error instanceof Error ? error.message : String(error) });
@@ -365,8 +411,11 @@ class NotificationService {
         return data;
     }
     async sendPushNotification(notification, userId) {
+        console.log('========== SEND PUSH ==========');
+        console.log('User:', userId);
         const messaging = getFirebaseMessaging();
         if (!messaging) {
+            console.log('No Firebase messaging instance available');
             return;
         }
         const { data, error } = await this.supabase
@@ -377,10 +426,13 @@ class NotificationService {
             .is('disabled_at', null);
         if (error)
             throw error;
+        console.log('DB returned:', data);
         const tokens = Array.from(new Set((data ?? [])
             .map((row) => String(row.token || ''))
             .filter(Boolean)));
+        console.log('Tokens:', tokens.length);
         if (tokens.length === 0) {
+            console.log('No device tokens found for user');
             return;
         }
         const notificationData = normalizeMap(notification.data);
@@ -390,37 +442,76 @@ class NotificationService {
             type: notification.type ?? '',
             campaign_type: notification.campaign_type ?? '',
         };
-        const multicastMessage = {
-            tokens,
-            notification: {
-                title: notification.title || defaultTitle(notification.type),
-                body: notification.message,
-                imageUrl: process.env.FCM_NOTIFICATION_IMAGE_URL || undefined,
-            },
-            data: messageData,
-            android: {
-                priority: 'high',
-                notification: {
-                    imageUrl: process.env.FCM_NOTIFICATION_IMAGE_URL || undefined,
-                },
-            },
-            apns: {
-                payload: {
-                    aps: {
-                        sound: notification.silent ? undefined : 'default',
-                        contentAvailable: notification.silent || undefined,
-                    },
-                },
-            },
-        };
-        const response = await messaging.sendMulticast(multicastMessage);
-        if (response.failureCount > 0) {
-            const failures = response.responses
-                .map((resp, index) => (resp.success ? null : `token[${index}]: ${resp.error?.code || resp.error?.message || 'unknown'}`))
-                .filter(Boolean);
-            if (failures.length > 0) {
-                throw new Error(`FCM multicast failures: ${failures.join('; ')}`);
-            }
+        // Send notifications per-token to avoid using the deprecated /batch endpoint.
+        console.log('Sending to Firebase (per-token, batched)...');
+        const supabase = this.supabase;
+        const BATCH_SIZE = Number(process.env.FCM_BATCH_SIZE) || 50;
+        const removableErrors = [
+            'messaging/registration-token-not-registered',
+            'messaging/invalid-registration-token',
+            'messaging/mismatched-credential',
+        ];
+        const sendResults = [];
+        for (let i = 0; i < tokens.length; i += BATCH_SIZE) {
+            const batch = tokens.slice(i, i + BATCH_SIZE);
+            const batchResults = await Promise.all(batch.map(async (token) => {
+                try {
+                    const msg = {
+                        token,
+                        notification: {
+                            title: notification.title || defaultTitle(notification.type),
+                            body: notification.message,
+                            imageUrl: process.env.FCM_NOTIFICATION_IMAGE_URL || undefined,
+                        },
+                        data: messageData,
+                        android: {
+                            priority: 'high',
+                            notification: {
+                                imageUrl: process.env.FCM_NOTIFICATION_IMAGE_URL || undefined,
+                            },
+                        },
+                        apns: {
+                            payload: {
+                                aps: {
+                                    sound: notification.silent ? undefined : 'default',
+                                    contentAvailable: notification.silent || undefined,
+                                },
+                            },
+                        },
+                    };
+                    const res = await messaging.send(msg);
+                    return { success: true, token, result: res };
+                }
+                catch (err) {
+                    // If the token is invalid or not registered, remove it from the DB
+                    try {
+                        const code = err?.code || (err?.errorInfo && err.errorInfo.code) || '';
+                        const shouldRemove = removableErrors.includes(code) || String(err).includes('Requested entity was not found');
+                        if (shouldRemove) {
+                            try {
+                                await supabase.from('device_tokens').delete().eq('token', token);
+                                console.log('Removed invalid device token from DB:', token);
+                            }
+                            catch (delErr) {
+                                console.warn('Failed to remove invalid token', token, delErr);
+                            }
+                        }
+                    }
+                    catch (innerErr) {
+                        console.warn('Error while handling send error for token', token, innerErr);
+                    }
+                    return { success: false, token, error: err };
+                }
+            }));
+            sendResults.push(...batchResults);
+            // small pause could be added here if needed to rate-limit
+        }
+        const successCount = sendResults.filter((r) => r.success).length;
+        const failureEntries = sendResults.filter((r) => !r.success);
+        console.log('Success:', successCount);
+        console.log('Failure:', failureEntries.length);
+        if (failureEntries.length > 0) {
+            console.log('Failures detail:', failureEntries.map((f) => ({ token: f.token, error: String(f.error) })));
         }
     }
     async findDeviceTokenId(userId, token) {
